@@ -2,7 +2,7 @@ spring:
   application:
     name: backend-assignment
   datasource:
-    url: jdbc:mysql://localhost:3306/ipl
+    url: jdbc:mysql://localhost:3306/ipldb
     username: root
     password: root
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -24,7 +24,7 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
 server:
-  port: 8080
+  port: 9090
 
 logging:
   level:
