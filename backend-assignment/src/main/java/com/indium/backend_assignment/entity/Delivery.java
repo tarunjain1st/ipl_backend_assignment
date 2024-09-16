@@ -8,24 +8,19 @@ import lombok.Data;
 @Data
 public class Delivery {
     @Id
+    @Column(name="delivery_id")
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer deliveryId;
+    @Column
+    private String batter;
+    @Column
+    private String bowler;
+    @Column
+    private Integer runs;
+    @Column
+    private Boolean wicket;
 
     @ManyToOne
     @JoinColumn(name = "over_id")
     private Over over;
-
-    private Integer ballNumber;
-    private String batterName;
-    private String bowlerName;
-    private String nonStrikerName;
-    private Integer runsScored;
-    private Integer extras;
-    private Integer totalRuns;
-    private Boolean wicket;
-    private String wicketKind;
-    private String playerOut;
-    private String fielder;
-
-    // Getters and setters
 }

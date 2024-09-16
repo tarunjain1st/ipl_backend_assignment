@@ -6,37 +6,21 @@ import lombok.Data;
 
 import java.time.LocalDate;
 import java.util.List;
-
 @Entity
 @Table(name = "Matches")
 @Data
 public class Match {
     @Id
+    @Column(name="match_id")
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer matchId;
+    @Column
     private String city;
+    @Column
     private String venue;
+    @Column(name = "match_date" )
     private LocalDate matchDate;
-    private String matchType;
-    private Integer overs;
-    private Integer ballsPerOver;
-    private String winnerTeam;
-    private String eventName;
-    private String eventSeason;
-    private Integer matchNumber;
-    private String tossWinner;
-    private String tossDecision;
-    private String playerOfMatch;
-    private String teamType;
 
     @OneToMany(mappedBy = "match")
     private List<Team> teams;
-
-    @OneToMany(mappedBy = "match")
-    private List<Innings> innings;
-
-    @OneToMany(mappedBy = "match")
-    private List<Official> officials;
-
-    // Getters and setters
 }

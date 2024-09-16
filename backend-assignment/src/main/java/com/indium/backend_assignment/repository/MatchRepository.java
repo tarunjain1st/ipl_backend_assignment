@@ -10,6 +10,6 @@ import java.util.List;
 @Repository
 public interface MatchRepository extends JpaRepository<Match, Integer> {
     List<Match> findByMatchDate(LocalDate date);
-    Match findByMatchNumber(int matchNumber);
+    Match findByCityAndVenueAndMatchDate(String city, String venue, LocalDate matchDate);
 
 }

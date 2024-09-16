@@ -4,6 +4,8 @@ import com.indium.backend_assignment.entity.*;
 import com.indium.backend_assignment.repository.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -12,7 +14,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.time.LocalDate;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -28,193 +31,237 @@ public class CricketService {
     private PlayerRepository playerRepository;
 
     @Autowired
+    private DeliveryRepository deliveryRepository;
+
+    @Autowired
     private InningsRepository inningsRepository;
 
     @Autowired
     private OverRepository overRepository;
 
     @Autowired
-    private DeliveryRepository deliveryRepository;
-
-    @Autowired
-    private OfficialRepository officialRepository;
-
-    @Autowired
     private ObjectMapper objectMapper;
 
+
+
     @Transactional
-    public void uploadJsonFile(MultipartFile file) throws IOException {
+    @CacheEvict(value = {"matchesByPlayer", "scoresByDate"}, allEntries = true)
+    public String uploadJsonFile(MultipartFile file) throws IOException {
         Map<String, Object> jsonData = objectMapper.readValue(file.getInputStream(), Map.class);
 
-        // Create and save Match
-        Match match = createMatchFromJson((Map<String, Object>) jsonData.get("info"));
-        matchRepository.save(match);
+        // Extract match info
+        Map<String, Object> info = (Map<String, Object>) jsonData.get("info");
+        if (info == null) {
+            return "Match info is missing in JSON data";
+        }
 
-        // Create and save Teams and Players
-        createTeamsAndPlayers(match, (Map<String, Object>) jsonData.get("info"));
+        // Check if the match already exists
+        Match existingMatch = findExistingMatch(info);
+        if (existingMatch != null) {
+            return "This match data has already been uploaded.";
+        }
 
-        // Create and save Officials
-        createOfficials(match, (Map<String, Object>) ((Map<String, Object>) jsonData.get("info")).get("officials"));
+        try {
+            // If the match doesn't exist, proceed with the upload
+            Match match = createMatchFromJson(info);
+            match = matchRepository.save(match);
 
-        // Create and save Innings, Overs, and Deliveries
-        createInningsOversDeliveries(match, (List<Map<String, Object>>) jsonData.get("innings"));
+            // Update Teams and Players
+            updateTeamsAndPlayers(match, info);
+
+            // Create and save Innings, Overs, and Deliveries
+            List<Map<String, Object>> inningsData = (List<Map<String, Object>>) jsonData.get("innings");
+            if (inningsData == null) {
+                return "Innings data is missing in JSON data";
+            }
+            createInningsOversDeliveries(match, inningsData);
+
+            return "File uploaded successfully";
+        } catch (Exception e) {
+            return "Error occurred while processing the file: " + e.getMessage();
+        }
     }
 
+    private Match findExistingMatch(Map<String, Object> info) {
+        String city = (String) info.get("city");
+        String venue = (String) info.get("venue");
+        List<?> dates = (List<?>) info.get("dates");
+        if (dates == null || dates.isEmpty()) {
+            return null; // Handle this case in the calling method
+        }
+        LocalDate matchDate = LocalDate.parse((String) dates.get(0));
+
+        return matchRepository.findByCityAndVenueAndMatchDate(city, venue, matchDate);
+    }
     private Match createMatchFromJson(Map<String, Object> info) {
         Match match = new Match();
         match.setCity((String) info.get("city"));
         match.setVenue((String) info.get("venue"));
-        match.setMatchDate(LocalDate.parse((String) ((List<?>) info.get("dates")).get(0)));
-        match.setMatchType((String) info.get("match_type"));
-        match.setOvers((Integer) info.get("overs"));
-        match.setBallsPerOver((Integer) info.get("balls_per_over"));
 
-        Map<String, Object> event = (Map<String, Object>) info.get("event");
-        match.setEventName((String) event.get("name"));
-        match.setMatchNumber((Integer) event.get("match_number"));
-
-        Map<String, Object> outcome = (Map<String, Object>) info.get("outcome");
-        match.setWinnerTeam((String) outcome.get("winner"));
-
-        match.setPlayerOfMatch((String) ((List<?>) info.get("player_of_match")).get(0));
-        match.setTeamType((String) info.get("team_type"));
-
-        Map<String, Object> toss = (Map<String, Object>) info.get("toss");
-        match.setTossWinner((String) toss.get("winner"));
-        match.setTossDecision((String) toss.get("decision"));
-
+        List<?> dates = (List<?>) info.get("dates");
+        if (dates == null || dates.isEmpty()) {
+            throw new RuntimeException("Match date is missing in JSON data");
+        }
+        match.setMatchDate(LocalDate.parse((String) dates.get(0)));
         return match;
     }
 
-    private void createTeamsAndPlayers(Match match, Map<String, Object> info) {
+    private void updateTeamsAndPlayers(Match match, Map<String, Object> info) {
         Map<String, List<String>> playersMap = (Map<String, List<String>>) info.get("players");
+        if (playersMap == null) {
+            throw new RuntimeException("Players data is missing in JSON data");
+        }
         List<String> teamNames = (List<String>) info.get("teams");
+        if (teamNames == null) {
+            throw new RuntimeException("Teams data is missing in JSON data");
+        }
 
         for (String teamName : teamNames) {
-            Team team = new Team();
-            team.setTeamName(teamName);
-            team.setMatch(match);
-            team.setIsWinner(teamName.equals(match.getWinnerTeam()));
-            teamRepository.save(team);
-
-            for (String playerName : playersMap.get(teamName)) {
-                Player player = new Player();
-                player.setPlayerName(playerName);
-                player.setTeam(team);
-                playerRepository.save(player);
+            Team team = teamRepository.findByTeamName(teamName);
+            if (team == null) {
+                team = new Team();
+                team.setTeamName(teamName);
             }
-        }
-    }
+            team.setMatch(match);  // Set the match for the team
+            team = teamRepository.save(team);
 
-    private void createOfficials(Match match, Map<String, Object> officialsData) {
-        createOfficialsForRole(match, (List<String>) officialsData.get("match_referees"), "Match Referee");
-        createOfficialsForRole(match, (List<String>) officialsData.get("umpires"), "Umpire");
-        createOfficialsForRole(match, (List<String>) officialsData.get("reserve_umpires"), "Reserve Umpire");
-        createOfficialsForRole(match, (List<String>) officialsData.get("tv_umpires"), "TV Umpire");
-    }
-
-    private void createOfficialsForRole(Match match, List<String> officialNames, String role) {
-        for (String name : officialNames) {
-            Official official = new Official();
-            official.setName(name);
-            official.setRole(role);
-            official.setMatch(match);
-            officialRepository.save(official);
-        }
-    }
-
-    private void createInningsOversDeliveries(Match match, List<Map<String, Object>> inningsData) {
-        for (Map<String, Object> inningData : inningsData) {
-            Innings innings = new Innings();
-            innings.setMatch(match);
-            innings.setTeam(teamRepository.findByTeamNameAndMatch((String) inningData.get("team"), match));
-            inningsRepository.save(innings);
-
-            List<Map<String, Object>> overs = (List<Map<String, Object>>) inningData.get("overs");
-            for (Map<String, Object> overData : overs) {
-                Over over = new Over();
-                over.setInnings(innings);
-                over.setOverNumber((Integer) overData.get("over"));
-                overRepository.save(over);
-
-                List<Map<String, Object>> deliveries = (List<Map<String, Object>>) overData.get("deliveries");
-                for (Map<String, Object> deliveryData : deliveries) {
-                    Delivery delivery = new Delivery();
-                    delivery.setOver(over);
-                    delivery.setBatterName((String) deliveryData.get("batter"));
-                    delivery.setBowlerName((String) deliveryData.get("bowler"));
-                    delivery.setNonStrikerName((String) deliveryData.get("non_striker"));
-
-                    Map<String, Object> runs = (Map<String, Object>) deliveryData.get("runs");
-                    delivery.setRunsScored((Integer) runs.get("batter"));
-                    delivery.setExtras((Integer) runs.get("extras"));
-                    delivery.setTotalRuns((Integer) runs.get("total"));
-
-                    // Handle wickets if present
-                    if (deliveryData.containsKey("wicket")) {
-                        delivery.setWicket(true);
-                        Map<String, Object> wicket = (Map<String, Object>) deliveryData.get("wicket");
-                        delivery.setWicketKind((String) wicket.get("kind"));
-                        delivery.setPlayerOut((String) wicket.get("player_out"));
-                        // Note: fielders might be a list, you may need to handle this differently
+            List<String> playerNames = playersMap.get(teamName);
+            if (playerNames != null) {
+                for (String playerName : playerNames) {
+                    Player player = playerRepository.findByPlayerName(playerName);
+                    if (player == null) {
+                        player = new Player();
+                        player.setPlayerName(playerName);
+                        player.setTeam(team);
+                        player.setTotalRuns(0);
+                        playerRepository.save(player);
                     }
-
-                    deliveryRepository.save(delivery);
                 }
             }
         }
     }
-    public List<Match> getMatchesPlayedByPlayer(String playerName) {
-        return deliveryRepository.findByBatterNameOrBowlerName(playerName, playerName)
+
+    private void createInningsOversDeliveries(Match match, List<Map<String, Object>> inningsData) {
+        int inningsCount = 0;
+        for (Map<String, Object> inningData : inningsData) {
+            inningsCount++;
+            Team team = teamRepository.findByTeamNameAndMatch((String) inningData.get("team"), match);
+            if (team == null) {
+                throw new RuntimeException("Team not found for this match");
+            }
+
+            Innings innings = new Innings();
+            innings.setMatch(match);
+            innings.setTeam(team);
+            inningsRepository.save(innings);
+
+            List<Map<String, Object>> overs = (List<Map<String, Object>>) inningData.get("overs");
+            if (overs != null) {
+                for (int overNumber = 0; overNumber < overs.size(); overNumber++) {
+                    Map<String, Object> overData = overs.get(overNumber);
+
+                    Over over = new Over();
+                    over.setOverNumber(overNumber + 1);
+                    over.setInnings(innings);
+                    overRepository.save(over);
+
+                    List<Map<String, Object>> deliveries = (List<Map<String, Object>>) overData.get("deliveries");
+                    if (deliveries != null) {
+                        for (Map<String, Object> deliveryData : deliveries) {
+                            Delivery delivery = new Delivery();
+                            delivery.setBatter((String) deliveryData.get("batter"));
+                            delivery.setBowler((String) deliveryData.get("bowler"));
+                            delivery.setOver(over);
+
+                            Map<String, Object> runs = (Map<String, Object>) deliveryData.get("runs");
+                            if (runs != null) {
+                                Integer runsScored = (Integer) runs.get("batter");
+                                if (runsScored != null) {
+                                    delivery.setRuns(runsScored);
+
+                                    // Update player's total runs
+                                    Player player = playerRepository.findByPlayerName(delivery.getBatter());
+                                    if (player == null) {
+                                        throw new RuntimeException("Player not found");
+                                    }
+                                    player.setTotalRuns(player.getTotalRuns() + runsScored);
+                                    playerRepository.save(player);
+
+                                    // Check for wicket
+                                    delivery.setWicket(deliveryData.containsKey("wicket"));
+
+                                    deliveryRepository.save(delivery);
+                                } else {
+                                    throw new RuntimeException("Runs scored data is missing");
+                                }
+                            } else {
+                                throw new RuntimeException("Runs data is missing");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Other methods remain the same
+    @Cacheable(value = "matchesByPlayer", key = "#playerName")
+    public String getMatchesPlayedByPlayer(String playerName) {
+        long matchCount = deliveryRepository.findByBatter(playerName)
                 .stream()
-                .map(delivery -> delivery.getOver().getInnings().getMatch())
+                .filter(delivery -> delivery.getOver() != null && delivery.getOver().getInnings() != null)
+                .map(delivery -> delivery.getOver().getInnings().getMatch().getMatchId())
                 .distinct()
-                .collect(Collectors.toList());
+                .count();
+        return playerName + " has played in " + matchCount + " match(es).";
     }
-
+    @Cacheable(value = "cumulativeScore", key = "#playerName")
     public int getCumulativeScoreOfPlayer(String playerName) {
-        return deliveryRepository.findByBatterName(playerName)
-                .stream()
-                .mapToInt(Delivery::getRunsScored)
-                .sum();
+        Player player = playerRepository.findByPlayerName(playerName);
+        if (player == null) {
+            return 0;
+        }
+        return player.getTotalRuns();
     }
-
-    public int getWicketsOfPlayer(String playerName) {
-        return deliveryRepository.findByBowlerNameAndWicketIsTrue(playerName).size();
+    @Cacheable(value = "topBatsmen", key = "{#pageable.pageNumber, #pageable.pageSize}")
+    public String getTopBatsmenPaginated(Pageable pageable) {
+        Page<Player> topBatsmen = playerRepository.findAllByOrderByTotalRunsDesc(pageable);
+        return topBatsmen.getContent().stream()
+                .map(player -> player.getPlayerName() + " (" + player.getTeam().getTeamName() + "): " + player.getTotalRuns() + " runs")
+                .collect(Collectors.joining("\n"));
     }
+    @Cacheable(value = "scoresByDate", key = "#date")
+    public String getMatchScoresByDate(LocalDate date) {
+        List<Match> matches = matchRepository.findByMatchDate(date);
+        if (matches.isEmpty()) {
+            return "No matches found on " + date;
+        }
 
-    public List<Match> getMatchScoresByDate(LocalDate date) {
-        return matchRepository.findByMatchDate(date);
-    }
+        StringBuilder result = new StringBuilder("Scores for matches on " + date + ":\n");
 
-    public List<Player> getPlayersByTeamAndMatchNumber(String teamName, int matchNumber) {
-        Match match = matchRepository.findByMatchNumber(matchNumber);
-        Team team = teamRepository.findByTeamNameAndMatch(teamName, match);
-        return playerRepository.findByTeam(team);
-    }
+        for (Match match : matches) {
+            result.append("Match at ").append(match.getVenue()).append(" between teams: ");
+            for (Team team : match.getTeams()) {
+                result.append(team.getTeamName()).append(" ");
+            }
+            result.append("\n");
 
-    public List<Official> getMatchRefereesByMatchNumber(int matchNumber) {
-        Match match = matchRepository.findByMatchNumber(matchNumber);
-        return officialRepository.findByMatchAndRole(match, "Referee");
-    }
+            List<Innings> inningsList = inningsRepository.findByMatch(match);
+            for (Innings innings : inningsList) {
+                result.append("Team: ").append(innings.getTeam().getTeamName()).append(" scored ");
 
-    public Page<Player> getTopBatsmenPaginated(Pageable pageable) {
-        return playerRepository.findAllByOrderByTotalRunsDesc(pageable);
-    }
+                int totalRuns = 0;
+                List<Over> overs = overRepository.findByInnings(innings);
+                for (Over over : overs) {
+                    List<Delivery> deliveries = deliveryRepository.findByOver(over);
+                    for (Delivery delivery : deliveries) {
+                        totalRuns += delivery.getRuns();
+                    }
+                }
+                result.append(totalRuns).append(" runs\n");
+            }
+        }
 
-    public double getStrikeRateForBatsmanInMatch(String batsmanName, int matchNumber) {
-        Match match = matchRepository.findByMatchNumber(matchNumber);
-        List<Delivery> deliveries = deliveryRepository.findByBatterNameAndOver_Innings_Match(batsmanName, match);
-
-        int totalRuns = deliveries.stream().mapToInt(Delivery::getRunsScored).sum();
-        int totalBalls = deliveries.size();
-
-        return totalBalls > 0 ? (totalRuns * 100.0) / totalBalls : 0.0;
-    }
-
-    public Page<Player> getTopWicketTakersPaginated(Pageable pageable) {
-        return playerRepository.findAllByOrderByTotalWicketsDesc(pageable);
+        return result.toString();
     }
 }
-
-    // ... (rest of the methods remain the same)

@@ -11,17 +11,16 @@ import java.util.List;
 @Data
 public class Over {
     @Id
+    @Column(name="over_id")
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Integer overId;
+    @Column(name="over_number")
+    private Integer overNumber;
 
     @ManyToOne
     @JoinColumn(name = "innings_id")
     private Innings innings;
 
-    private Integer overNumber;
-
     @OneToMany(mappedBy = "over")
     private List<Delivery> deliveries;
-
-    // Getters and setters
 }
