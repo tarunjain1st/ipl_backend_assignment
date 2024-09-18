@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: backend-assignment
-          image: backend-assignment  # Updated image version
+          image: backend-assignment:0.1 # Updated image version
           ports:
             - containerPort: 9999  # Original port
           env:
